@@ -34,51 +34,33 @@ b_torch = grouped_layer.bias
 y = grouped_layer(x)
 print(y)
 
+import torch.nn as nn
+
 class CustomGroupedConv2D(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', n=1):
         super(CustomGroupedConv2D, self).__init__()
-        self.groups = groups
-        self.conv_list = nn.ModuleList()    # empty list to store the convolutions
-        in_channels_per_group = in_channels // groups    # calculate the number of input channels per group
-        out_channels_per_group = out_channels // groups    # calculate the number of output channels per group
+        self.n = n
+        self.convs = nn.ModuleList()
+        for i in range(n):
+            self.convs.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels//n, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=1, bias=bias, padding_mode=padding_mode))
 
-        # split the weights and biases between the groups
-        # assign weights and biases from grouped_layer to grouped_layer_custom
-        for i in range(grouped_layer_custom.groups):
-            # split the weight and bias tensors for each group
-            weight_i = w_torch[i*(64//grouped_layer_custom.groups): (i+1)*(64//grouped_layer_custom.groups)]
-            bias_i = b_torch[i*(128//grouped_layer_custom.groups): (i+1)*(128//grouped_layer_custom.groups)]
-            
-            grouped_layer_custom.conv_list[i].weight = nn.Parameter(weight_i.clone())
-            grouped_layer_custom.conv_list[i].bias = nn.Parameter(bias_i.clone())
-
-        
     def forward(self, x):
-        # split the input tensor along the channel dimension
-        x_list = torch.chunk(x, self.groups, dim=1)
-        out_list = []
+        outputs = []
+        for i in range(self.n):
+            outputs.append(self.convs[i](x[:, i*(x.shape[1]//self.n):(i+1)*(x.shape[1]//self.n), :, :]))
+        return torch.cat(outputs, dim=1)
 
-        # apply convolution to each group and concatenate the results
-        for i in range(self.groups):
-            out_list.append(self.conv_list[i](x_list[i]))
-        out = torch.cat(out_list, dim=1)
-        return out
-# create an instance of CustomGroupedConv2D
-grouped_layer_custom = CustomGroupedConv2D(64, 128, kernel_size=3, stride=1, padding=1, groups=16, bias=True)
+# özelleştirilmiş gruplanmış 2D evrişim katmanı
+grouped_layer_custom = CustomGroupedConv2D(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, dilation=1, groups=16, bias=True, padding_mode='zeros', n=16)
 
+# orijinal ağırlıkların kopyalanması ve bölünmesi
+for i in range(16):
+    grouped_layer_custom.convs[i].weight.data = w_torch.data[i*(w_torch.shape[0]//16):(i+1)*(w_torch.shape[0]//16), :, :, :]
+    grouped_layer_custom.convs[i].bias.data = b_torch.data[i*(b_torch.shape[0]//16):(i+1)*(b_torch.shape[0]//16)]
+y2 = grouped_layer_custom(x)
 
-# assign weights and biases from grouped_layer to grouped_layer_custom
-grouped_layer_custom.conv_list[0].weight = nn.Parameter(grouped_layer.weight.data.clone())
-grouped_layer_custom.conv_list[0].bias = nn.Parameter(grouped_layer.bias.data.clone())
-
-
-y_custom = grouped_layer_custom(x)
-
-
-
-#
-print(y_custom.shape)
+# çıktı tensörü
+print(y2)
+print(y2.shape)
 print(y.shape)
-print(torch.allclose(y, y_custom))  # expect True
-
-        
+print(torch.allclose(y, y2)) 
