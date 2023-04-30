@@ -14,7 +14,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import onnx
-import onnxruntime as ort
 from onnx2pytorch import ConvertModel
 import torchinfo
 
