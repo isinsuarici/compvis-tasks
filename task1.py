@@ -32,35 +32,69 @@ w_torch = grouped_layer.weight
 b_torch = grouped_layer.bias
 
 y = grouped_layer(x)
-print(y)
+print(f"y is : {y}\n")
 
-import torch.nn as nn
-
+# now write your custom layer
+# the output of CustomGroupedConv2D(x) must be equal to grouped_layer(x)
 class CustomGroupedConv2D(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros', n=1):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
         super(CustomGroupedConv2D, self).__init__()
-        self.n = n
+
+        # store the arguments as class attributes
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.bias = bias
+
+        # calculate the number of output channels per group
+        assert out_channels % groups == 0, "out_channels must be divisible by groups"
+        self.out_channels_per_group = out_channels // groups
+
+        # create the convolution layers in a ModuleList
         self.convs = nn.ModuleList()
-        for i in range(n):
-            self.convs.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels//n, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=1, bias=bias, padding_mode=padding_mode))
+        for i in range(groups):
+            self.convs.append(nn.Conv2d(in_channels, self.out_channels_per_group, kernel_size, stride, padding, dilation, 1, bias))
 
     def forward(self, x):
-        outputs = []
-        for i in range(self.n):
-            outputs.append(self.convs[i](x[:, i*(x.shape[1]//self.n):(i+1)*(x.shape[1]//self.n), :, :]))
-        return torch.cat(outputs, dim=1)
+        # split the input tensor along the channel dimension
+        x_splits = torch.split(x, self.in_channels // self.groups, dim=1)
 
-# özelleştirilmiş gruplanmış 2D evrişim katmanı
-grouped_layer_custom = CustomGroupedConv2D(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, dilation=1, groups=16, bias=True, padding_mode='zeros', n=16)
+        # apply each convolution layer to its corresponding input tensor
+        conv_outputs = []
+        for i in range(self.groups):
+            conv_outputs.append(self.convs[i](x_splits[i]))
 
-# orijinal ağırlıkların kopyalanması ve bölünmesi
-for i in range(16):
-    grouped_layer_custom.convs[i].weight.data = w_torch.data[i*(w_torch.shape[0]//16):(i+1)*(w_torch.shape[0]//16), :, :, :]
-    grouped_layer_custom.convs[i].bias.data = b_torch.data[i*(b_torch.shape[0]//16):(i+1)*(b_torch.shape[0]//16)]
-y2 = grouped_layer_custom(x)
+        # concatenate the output tensors along the channel dimension
+        y = torch.cat(conv_outputs, dim=1)
 
-# çıktı tensörü
-print(y2)
-print(y2.shape)
-print(y.shape)
-print(torch.allclose(y, y2)) 
+        return y
+
+
+# Custom Grouped Conv2D Layer
+grouped_layer_custom = CustomGroupedConv2D(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, dilation=1, groups=16, bias=True)
+
+# Copy the weights and bias from the original layer to the custom layer
+group_num = grouped_layer_custom.groups
+for i in range(group_num):
+    grouped_layer_custom.convs[i].weight.data = w_torch.data[i*(w_torch.shape[0]//group_num):(i+1)*(w_torch.shape[0]//group_num), :, :, :]
+    grouped_layer_custom.convs[i].bias.data = b_torch.data[i*(b_torch.shape[0]//group_num):(i+1)*(b_torch.shape[0]//group_num)]
+
+y_custom = grouped_layer_custom(x)
+
+# Test the output
+print(f"y_custom is : {y_custom}\n")
+
+# Print the shapes of the outputs
+print(f"Shape of y is: {y.shape}")
+print(f"Shape of y_custom is: {y_custom.shape}\n")
+
+# Print if they are equal or not
+print(f"Are they equal? : {torch.allclose(y, y_custom)}") 
+print(f"Are they equal with 1e-3 tolerance? : {torch.allclose(y, y_custom, rtol=1e-3, atol=1e-3)}\n") 
+
+# Print the difference
+print(f"Difference between them is : {torch.sum(y_custom - y)}")
